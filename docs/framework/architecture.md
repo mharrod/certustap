@@ -6,324 +6,117 @@
 
 ---
 
-### 1. Assurance Manifest
-**Purpose:** The declarative control layer that defines assurance scope, configurations, and required checks.  
-It describes what systems, tests, and policies are to be run, and acts as the canonical “contract” for an assurance run.
+### Reading the Diagram
+The illustration groups the assurance platform into four color-coded lanes:
 
-**Responsibilities:**
+- **Yellow** – inputs and downstream consumers (manifests, external programs, ticketing, reporting).
+- **Blue** – the assurance platform core that ingests evidence, normalizes findings, enriches context, manages assets, and enforces policies.
+- **Purple** – AI reasoning capabilities (retrievers, fusion logic, schema/safety gates, agent orchestrators, LLM chains).
+- **Red** – the TrustCentre services (sign/verify, provenance, transparency, ledgers, timestamps, key management) plus platform guardrails, verification, and observability.
 
-- Declare systems, models, and artifacts under test  
-- Reference applicable policies, frameworks, and thresholds  
-- Define metadata (owners, risk context, environments)  
-- Produce signed assurance manifests sent to the OCI registry
-
----
-
-### 2. Pipeline Orchestration
-
-**Purpose:** The control layer that runs and coordinates all scanning, enrichment, and gating tasks.  
-**Examples:** Dagger, GitHub Actions, Tekton, GitLab CI/CD, or any workflow orchestrator.
-
-**Responsibilities:**
-
-- Schedule and execute the assurance stages  
-- Manage data flow between scanners, normalizers, enrichers, and gates  
-- Ensure each step emits signed evidence artifacts  
+The remainder of this doc walks left-to-right across the diagram.
 
 ---
 
-### 3. Systems Under Test
+### 1. Assurance Inputs
+**Assurance Manifest** acts as the declarative contract for a run. It scopes systems, models, datasets, policies, thresholds, and metadata (owners, environments, risk tier) and is signed before distribution. Pipeline orchestrators (Dagger, GitHub Actions, Tekton, GitLab CI, etc.) use the manifest to plan execution, fan out jobs, and stream signed status back to the TrustCentre.
 
-**Purpose:** The targets being evaluated — can be application code, AI models, datasets, configurations, or deployed systems.  
-
-**Examples:**
-
-- Source repositories (code)
-- Trained AI models (`.onnx`, `.pt`, `.safetensors`)
-- Cloud workloads (VMs, clusters)
-- Data assets or ETL pipelines  
-
-**Output:** Artifacts ready for scanning.
+**Systems Under Test** include application repos, container images, infrastructure definitions, AI models (`.onnx`, `.pt`, `.safetensors`), datasets/ETL jobs, and runtime workloads. The manifest maps each target to required scanners and policy gates so the pipeline can trace accountability per asset.
 
 ---
 
-### 4. Scanning — Assurance Testing Tooling
+### 2. Testing & Evidence Fabric
+Left-hand stacks in the diagram show how heterogeneous tooling feeds the platform. Each row runs its own plan → stage → parse/normalize cycle before forwarding structured artifacts.
 
-Scanners identify security flaws, policy violations, or data risks across multiple assurance domains.
+| Lane | Example Tooling | Primary Evidence |
+|------|-----------------|------------------|
+| **Security** | SAST, DAST, SCA, IaC, Fuzzing | Vulnerabilities, misconfigurations, library drift |
+| **Integrity** | Sigstore, SLSA attestations, Falco, provenance checkers | Supply-chain trust, workload drift, runtime tampering |
+| **Safety & Privacy** | Presidio, Macie, Great Expectations, policy-as-code checks | PII leakage, policy posture, privacy regressions |
+| **AI & Other Specialized** | PyRIT, Guardrails, DeepEval, model-level unit tests, domain-specific scanners | Bias, hallucination and jailbreak scores, data/feature anomalies |
 
-| Category | Example Tools | Focus |
-|-----------|----------------|--------|
-| **Security** | SAST, DAST, SCA, IaC | Vulnerabilities, misconfigurations |
-| **Integrity** | Sigstore, SLSA, Falco | Provenance, tamper detection, drift |
-| **Privacy** | Presidio, Macie, Great Expectations | PII leakage, data masking, privacy risk |
-| **AI Assurance** | PyRIT, AIF360, DeepEval, Guardrails | Bias, fairness, hallucination, unsafe output |
-
-Each scanner produces structured output (e.g., SARIF, JSON, or custom format).
-
----
-
-### 5. Normalization
-
-**Purpose:** Converts heterogeneous scanner results into a consistent schema for downstream analysis.
-
-**Key Tasks:**
-
-- **Schema Alignment:** Convert outputs (SARIF preferred) to a standard model  
-- **Fingerprinting:** Assign unique IDs to findings (to track persistence across runs)  
-- **Severity Mapping:** Standardize severities (e.g., map “critical” → CVSS 9–10)
-
-**Output Example:**
-```json
-{
-  "fingerprint": "abc123",
-  "severity": "high",
-  "source": "snyk",
-  "target": "service-a",
-  "file": "src/main.py"
-}
-```
+Each scanner emits SARIF, JSON, or Protobuf that is signed (or signable) and tagged with run metadata so downstream stages can deduplicate and correlate findings across reruns.
 
 ---
 
-### 6. Enrichment
+### 3. Assurance Platform Core (Blue Lane)
+Once evidence lands in the platform, the blue lane takes over:
 
-#### A. Contextual Enrichment
+1. **Ingest** – Validates signatures, enforces manifest scope, and writes raw evidence blobs plus metadata envelopes to staging object storage.
+2. **Normalize & Dedupe** – Converts every scanner schema to a unified finding model (SARIF-first), fingerprints issues, collapses duplicates, and maintains run-to-run lineage.
+3. **Enrich** – Adds contextual (owners, service, environment, SLA tier) and threat intel (CVSS/CWE, KEV/EPSS, exploit status, patchability) data. Evidence URIs remain placeholders until TrustCentre signing completes.
+4. **Assets** – Maintains the catalog of systems, models, datasets, policies, and waivers linked to each finding. This enables cross-run impact analysis and asset-specific gates.
+5. **Policy Gate** – Evaluates normalized, enriched findings against policy-as-code (CUE, Rego/OPA). Output is a deterministic decision record referencing manifest version, policy bundle digest, and evidence URIs.
 
-Adds business, operational, and traceability context.
-
-| Field | Description |
-|--------|-------------|
-| **Severity** | Finalized severity after normalization |
-| **Component or Service** | Derived from repo or deployment manifest |
-| **Evidence URI (Placeholder)** | Temporary identifier that will later point to the signed OCI evidence |
-| **Additional Labels** | e.g., `tool:snyk`, `env:prod`, `team:payments` |
-
-#### B. Threat Enrichment
-Adds external risk intelligence and threat context.
-
-| Field | Description |
-|--------|-------------|
-| **CVSS / CWE / CPE** | Classification and scoring references |
-| **Exploit Available?** | Indicates known exploit existence |
-| **EPSS Score** | Probability of exploitation |
-| **Patch Available** | Boolean flag for fixability |
-| **Vulnerability Score** | Composite risk score based on contextual + threat data |
+These blocks map directly to the sequenced rectangles across the main blue swimlane.
 
 ---
 
-### 7. Policy Gate (Policy Decision)
+### 4. AI Reasoning Fabric (Purple Lane)
+Sitting directly beneath the core pipeline, the purple lane provides higher-order reasoning and automation:
 
-**Purpose:** The automated evaluation checkpoint where findings are tested against defined policies.  
-**Implemented as:** Code-based policy (CUE, Rego, or OPA rules).
+- **Retrievers** query vector stores, OCI manifests, or ticket systems to collect prior context.
+- **LLM Chain** executes curated prompt/response flows for summarization, explanation, or narrative generation.
+- **Agent Orchestrator** coordinates specialist agents (risk summarizer, waiver validator, privacy reviewer) so tasks can branch/merge while staying policy-aware.
+- **Schema & Safety Gates** enforce structured outputs, reject hallucinations, and ensure AI-generated artifacts satisfy bias and safety thresholds before distribution.
+- **Fusion Logic** correlates signals (e.g., vulnerability + EPSS + waiver status) to synthesize insights for dashboards or chat interfaces.
 
-**Core Inputs:**
-
-- Normalized and enriched findings  
-- Policy definitions and thresholds  
-- Optional human approvals (from previous runs)
-
-| Policy | Description |
-|---------|-------------|
-| **SEC-001** | No critical vulnerabilities in production without valid waiver |
-| **INT-002** | Artifacts must have valid Sigstore signature |
-| **PRV-003** | Privacy risk score must be ≤ 0.5 |
-| **AI-004** | Model bias must be ≤ 0.2 or requires review |
-
-**Outputs:**
-
-- **Pass:** All rules satisfied → pipeline proceeds automatically  
-- **Fail:** One or more violations detected → triggers Human-in-the-Loop  
+Outputs feed back into enrichment, policy gates, and downstream communications, always referencing verifiable evidence IDs.
 
 ---
 
-### 8. Human in the Loop (HITL)
-
-**Purpose:** Manual approval or override for exceptions requiring judgment.
-
-**Triggered by:**
-
-- Known exploited vulnerabilities (KEV = true)
-- High EPSS (≥ 0.7)
-- Critical/High findings in production
-- Potential false positives
-
-**Process:**
-
-1. Gate pauses and sends a review request (ticket or form)  
-2. Reviewer assesses evidence and approves or rejects  
-3. Approved waivers are signed and stored as OCI artifacts  
-4. Pipeline resumes and re-evaluates the gate with approval context  
-
-**Evidence Type Example:**
-
-```json
-{
-  "type": "approval",
-  "approved_by": "seclead@example.com",
-  "scope": "finding:abc123",
-  "expires_at": "2025-11-05"
-}
-```
+### 5. Human-in-the-Loop (Green Bar)
+When policy gates detect exceptions (critical vulns, high EPSS, privacy exceedances, AI safety anomalies), the pipeline pauses at the human-in-the-loop (HITL) layer. Reviewers receive a signed package (findings + context + AI summary), approve or reject within SLA, and their decision is recorded as a signed artifact and reintroduced to the gate for re-evaluation.
 
 ---
 
-### 9. Outputs and Evidence Management
-
-After passing the policy gate (either automatically or with approval), the pipeline produces three main evidence outputs.
-
-#### A. Metrics
-
-Aggregated quantitative data (counts, trends, severities, scores).  
-Used for visualization and continuous monitoring.  
-**Examples:** vulnerability counts by team, mean time to approval, bias trendline.
-
-#### B. Ticket Management
-
-Issues and findings are synchronized into a project management tool (e.g., OpenProject, Jira).  
-Each ticket links to its Evidence URI in the OCI registry.  
-Supports remediation tracking and SLA management.
-
-#### C. Artifacts (OCI Registry)
-
-The canonical storage for all signed evidence:
-- Normalized results  
-- Enrichment data  
-- Policy evaluation output  
-- Human approvals  
-
-Each artifact is immutable and referenced by a digest (e.g., `oci://assurance/findings@sha256:...`).
+### 6. Guardrails & Verification (Red Bar)
+Beneath HITL, platform guardrails perform biological-safety-style controls for AI components (prompt isolation, output filtering, escape prevention) and enforce deterministic verification on every automated action. This ensures LLM or agent-driven steps cannot mutate evidence, bypass policy, or leak confidential data. All guardrail verdicts become part of the audit log.
 
 ---
 
-### 10. Visualization & Dashboards
+### 7. Logging & Observability (Gray Bar)
+Every service emits structured logs, metrics, traces, and event streams. Real-time observability allows:
 
-**Visualization:** Feeds from Metrics for reporting and analytics.  
-Commonly implemented via **Grafana** or similar dashboards.
-
-**Dashboard (Governance View):**  
-
-Feeds from Ticket Management for operational tracking.  
-Provides audit-ready evidence of exceptions, open risks, and assurance status.
+- Pipeline health and latency tracking
+- Drift/change detection on policies and manifests
+- Evidence lifecycle monitoring (created → signed → consumed)
+- Continuous export to SIEM/SOAR or BI platforms shown on the far right of the diagram
 
 ---
 
-### 11. TrustCentre
+### 8. TrustCentre (Red Box)
+The TrustCentre underpins the entire flow and bi-directionally links to ingest, gates, HITL, and downstream systems.
 
-**Purpose:** The cryptographic and identity backbone of the assurance framework — ensuring that all evidence, policies, and approvals are verifiable, timestamped, and immutable.
-
-**Components:**
-
-| Component | Description |
+| Capability | Description |
 |------------|-------------|
-| **Sign / Verify** | Handles digital signatures (Cosign, KMS, or keyless Sigstore). Every artifact, manifest, and waiver is signed before publishing. |
-| **WORM-Compliant OCI** | Write-Once, Read-Many (WORM)–compliant OCI registry that guarantees immutability for stored evidence (e.g., Harbor, ORAS, GCP Artifact Registry). |
-| **Transparency** | Enables public or internal verifiability of evidence chains using transparency logs (e.g., Rekor) or Merkle proofs. |
-| **Provenance** | Records the lineage of all artifacts — mapping “who, what, when, how” for every piece of evidence. |
-| **Audit Ledger** | A verifiable event log that records all pipeline operations, human approvals, and gate evaluations for audit readiness. |
-| **Timestamp** | RFC 3161–compliant timestamps to bind evidence to trusted time anchors. |
-| **Key & Identity Management** | Integrates enterprise KMS, OIDC identity providers, and Vault for secure key material and policy-based signing. Supports threshold signatures and delegated authority (e.g., policy keys). |
+| **Sign / Verify** | Cosign, Sigstore, or enterprise KMS-backed signing for manifests, scanner outputs, policy results, waivers, and AI artifacts. |
+| **WORM OCI Registry** | Write-once stores (Harbor, ORAS, Artifact Registry) for immutable evidence digests. |
+| **Transparency** | Rekor/Merkle logs for public/internal verifiability of evidence chains. |
+| **Provenance** | SBOM/SLSA lineage linking “who/what/when/how” for every artifact. |
+| **Audit Ledger** | Append-only ledger of pipeline operations, approvals, and guardrail triggers. |
+| **Timestamp** | RFC 3161 or equivalent trusted-time anchoring of signatures. |
+| **Key & Identity Management** | Policy-scoped keys using enterprise KMS, OIDC identities, delegated signing authorities, and threshold signing for critical actions. |
 
-**Output:** Signed, timestamped, and provenance-linked artifacts that form the root of trust for the entire assurance ecosystem.
-
----
-
-### 12. AI Reasoning
-
-**Purpose:** Provides semantic analysis, correlation, and higher-order reasoning across all assurance artifacts using AI models.  
-Acts as the “assurance intelligence” layer that can interpret evidence, generate insights, and assist reviewers.
-
-**Core Modules:**
-
-| Module | Description |
-|---------|-------------|
-| **Retrievers** | Query vector databases or OCI manifests to locate relevant evidence, policies, and prior run history. |
-| **Fusion Logic** | Aggregates multi-source evidence and correlates findings (e.g., linking a vulnerability with its exploit probability and waiver context). |
-| **LLM Chain** | Executes large language model (LLM) workflows — e.g., summarizing findings, generating assurance narratives, or classifying risks. |
-| **Schema & Safety Gates** | Enforces guardrails ensuring AI outputs adhere to expected schema, bias limits, and factual consistency before being published. |
-| **Agent Orchestrator** | Coordinates specialized AI agents (e.g., risk summarizer, waiver validator, or privacy auditor) and routes tasks between them. |
-
-**Responsibilities:**
-
-- Perform **context-aware analysis** across structured and unstructured assurance data  
-- Generate **natural language summaries** for dashboards and auditors  
-- Run **DeepEval or equivalent frameworks** to evaluate AI-generated outputs for accuracy and safety  
-- Contribute **derived metrics** (e.g., hallucination rate, bias delta, model drift) to Metrics and Visualization layers  
-
-**Output:** AI-augmented reasoning traces and structured evidence summaries, stored in the OCI registry and linked to Assurance Chatbot.
+Signed evidence metadata (policy, owners, context, version, policy keys) travels with every artifact, enabling downstream verification without rerunning the pipeline.
 
 ---
 
-### 13. Assurance Chatbot
+### 9. Downstream Consumers (Yellow Boxes on Right)
+Policy outcomes and signed evidence synchronize automatically to the systems highlighted on the right side of the diagram:
 
-**Purpose:** Human–machine interface that allows engineers, auditors, and stakeholders to query assurance evidence conversationally.
+- **Program Systems** – SIEM (Splunk), SOAR (Swimlane), compliance registries/OSCAL hubs, raw feed storage for BI/analytics.
+- **Software Management** – Issue/ticket systems (Jira), change/incident platforms (ServiceNow, Opsgenie), chat (Slack, Teams), product/engineering roadmaps, release notes, PLAs.
+- **Governance** – GRC dashboards, continuous assurance portals, SBOM exchanges, MITRE/SLA tracking, audit portals.
+- **Communications** – Executive dashboards, customer Trust/Assurance reports, chatbot experiences, API relays, email digests.
 
-**Key Functions:**
-
-- **Interactive Querying:** Retrieve artifacts and metrics via natural language (e.g., “Show all privacy waivers approved in Q4”).  
-- **Context-Aware Assistance:** Uses retrievers and fusion logic from the AI Reasoning layer to explain findings, waivers, or policy outcomes.  
-- **Provenance-Aware Responses:** All chatbot outputs reference verifiable Evidence URIs (never hallucinated data).  
-- **Human Feedback Loop:** Allows auditors to flag discrepancies or provide annotations, which become part of the next enrichment cycle.  
-
-**Example Interaction:**
-
-> **User:** “Why was SEC-001 waived for Service X?”  
-> **Chatbot:** “Waiver approved by seclead@example.com on 2025-11-05, linked to Finding abc123 (CVSS 9.1). Evidence URI: `oci://assurance/waivers@sha256:...`.”
-
-**Backend Integration:**
-
-- Pulls from OCI registry, metrics store, and ticket system  
-- Uses LLM Chain + Schema/Safety Gates to ensure outputs remain accurate and non-speculative  
-- Logs every query and response for audit traceability  
+Each integration references immutable OCI evidence URIs so consumers can independently verify claims.
 
 ---
 
-### 14. Evidence & Traceability
+### 10. Evidence & Traceability Principles
+Regardless of lane, the platform enforces the following:
 
-Every step produces signed or attestable evidence.
-
-| Step | Evidence Type | Storage |
-|------|----------------|----------|
-| **Scanning** | Raw scanner reports | Temporary workspace |
-| **Normalization** | Normalized SARIF | OCI Registry |
-| **Enrichment** | Contextual + Threat JSON | OCI Registry |
-| **Policy Decision** | Gate results + policy version | OCI Registry |
-| **HITL** | Approval artifact | OCI Registry |
-| **Outputs** | Aggregated metrics & dashboards | Monitoring systems |
-
-All evidence URIs are included in tickets and metrics, ensuring end-to-end traceability.
-
----
-
-### 15. Key Design Principles
-
-| Principle | Description |
-|------------|-------------|
-| **Immutable Evidence** | All artifacts are signed and stored immutably (OCI digests). |
-| **Policy-as-Code** | Rules are versioned, testable, and reviewed like software. |
-| **Human-in-the-Loop** | Humans intervene only where judgment is required. |
-| **Continuous Enrichment** | Findings are dynamically enriched with internal and external context. |
-| **Unified Schema** | SARIF (or equivalent) ensures interoperability across scanners. |
-| **Auditability** | Each decision is traceable from source to signature. |
-
----
-
-### 16. Optional Extensions
-
-| Extension | Description |
-|------------|-------------|
-| **Integrity Drift Monitor** | Continuously verify that deployed workloads match signed artifacts. |
-| **Privacy Regression Suite** | Run privacy checks before every dataset or model update. |
-| **AI Evaluation Metrics** | Integrate hallucination rate, bias delta, explainability score. |
-| **Continuous Feedback Loop** | Feed metrics back into developer dashboards and risk scoring models. |
-
----
-
-## Summary
-
-This pipeline provides a single source of truth for security, integrity, privacy, and AI assurance.  
-It turns what were once siloed checks into a cohesive, auditable, and policy-driven control plane.  
-By combining **automation + human oversight + immutable evidence**, this model enables organizations to achieve:
-
-- Continuous compliance  
-- Measurable trust  
-- Real-time visibility across all assurance dimensions
+- Every stage outputs signed or attestable artifacts (raw scanner reports, normalized SARIF, enrichment JSON, policy decisions, HITL approvals, AI reasoning traces).
+- Evidence URIs and fingerprints persist into tickets, dashboards, and reports to guarantee end-to-end traceability.
+- Policy-as-code, immutable storage, and human oversight combine to deliver continuous compliance, measurable trust, and real-time visibility across security, integrity, privacy, and AI assurance dimensions.
